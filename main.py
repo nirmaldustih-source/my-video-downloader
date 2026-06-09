@@ -35,9 +35,9 @@ def download_video(url: str):
 def stream_video(video_url: str, title: str = "video"):
     try:
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': '*/*', 'Connection': 'keep-alive'
-        }
+    'Content-Disposition': 'attachment; filename="video.mp4"'
+}
+return StreamingResponse(video_stream, media_type="video/mp4", headers=headers)
         req = requests.get(video_url, headers=headers, stream=True)
         clean_title = "".join([c for c in title if c.isalpha() or c.isdigit() or c==' ']).rstrip()
         return StreamingResponse(
