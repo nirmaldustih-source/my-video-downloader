@@ -3,10 +3,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 import yt_dlp
 import requests
+import urllib.parse
 
 app = FastAPI()
 
-# Frontend එකට Data ගන්න CORS Middleware එක
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -14,10 +14,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-def format_size(bytes_size):
-    """Bytes ගණන MB වලට හරවා ගන්නා පොඩි Function එකක්"""
-    if bytes_size:
-        return f"{round(bytes_size / (1024 * 1024), 1)} MB"
+def get_live_filesize(url: str):
+    """Facebook CDN ලින්ක් එකෙන් ඇත්තම File Size එක ඇදලා ගන්නා සුපිරි ලොජික් එක"""
+    try:
+        response = requests.head(url, allow_redirects=True, timeout=5)
+        size_bytes = response.headers.get('Content-Length')
+        if size_bytes:
+            size_mb = round(int(size_bytes) / (1024 * 1024), 1)
+            return f"{size_mb} MB"
+    except Exception:
+        pass
     return "Unknown Size"
 
 @app.get("/api/download")
@@ -28,49 +34,45 @@ def download_video(url: str):
             info = ydl.extract_info(url, download=False)
             formats = info.get('formats', [])
             
-            # UI එකේ ටැබ් 5ට අදාල දත්ත ව්‍යුහය
+            # MP3 කොටස සම්පූර්ණයෙන්ම අයින් කරලා තියෙන්නේ මචං
             data_contract = {
                 "1080p": {"url": None, "size": "Not Available"},
                 "720p": {"url": None, "size": "Not Available"},
-                "480p": {"url": None, "size": "Not Available"},
-                "mp3": {"url": None, "size": "Not Available"}
+                "480p": {"url": None, "size": "Not Available"}
             }
             
             hd_url, sd_url = None, None
-            hd_size, sd_size = "Unknown Size", "Unknown Size"
             
-            # FB වල තියෙන HD සහ SD ලින්ක්ස් සහ Size වෙන් කර ගැනීම
+            # HD සහ SD ලින්ක්ස් වෙන් කරගැනීම
             for f in formats:
                 f_url = f.get('url')
-                filesize = f.get('filesize') or f.get('filesize_approx')
-                size_str = format_size(filesize)
-                
+                if not f_url:
+                    continue
                 if f.get('format_id') == 'hd':
                     hd_url = f_url
-                    hd_size = size_str
                 elif f.get('format_id') == 'sd':
                     sd_url = f_url
-                    sd_size = size_str
 
-            # UI එකේ ටැබ් වලට ලින්ක්ස් සහ සයිස් ආදේශ කිරීම
-            # FB වල සාමාන්‍යයෙන් HD කියන්නේ 720p හෝ 1080p වලටයි
+            title = info.get('title', 'Facebook_Video')
+            encoded_title = urllib.parse.quote(title)
+
+            # බ්‍රව්සර් එකේ ප්ලේ නොවී කෙලින්ම බාගන්න අපේම සර්වර් එකේ ප්‍රොක්සි ලින්ක් එකක් හදනවා
             if hd_url:
-                data_contract["1080p"] = {"url": hd_url, "size": hd_size}
-                data_contract["720p"] = {"url": hd_url, "size": hd_size}
-            if sd_url:
-                data_contract["480p"] = {"url": sd_url, "size": sd_size}
-            elif hd_url and not sd_url:
-                data_contract["480p"] = {"url": hd_url, "size": hd_size}
+                hd_size = get_live_filesize(hd_url)
+                proxy_hd_link = f"/api/download-file?video_url={urllib.parse.quote(hd_url)}&title={encoded_title}"
+                data_contract["1080p"] = {"url": proxy_hd_link, "size": hd_size}
+                data_contract["720p"] = {"url": proxy_hd_link, "size": hd_size}
                 
-            # MP3 ටැබ් එක සඳහා Audio/Video ලින්ක් එකක් සෙට් කිරීම
             if sd_url:
-                data_contract["mp3"] = {"url": sd_url, "size": sd_size}
-            elif hd_url:
-                data_contract["mp3"] = {"url": hd_url, "size": hd_size}
+                sd_size = get_live_filesize(sd_url)
+                proxy_sd_link = f"/api/download-file?video_url={urllib.parse.quote(sd_url)}&title={encoded_title}"
+                data_contract["480p"] = {"url": proxy_sd_link, "size": sd_size}
+            elif hd_url and not sd_url:
+                data_contract["480p"] = data_contract["720p"]
 
             return {
                 "success": True,
-                "title": info.get('title', 'Facebook Video'),
+                "title": title,
                 "thumbnail": info.get('thumbnail', 'https://placehold.co/600x338/png'),
                 "formats": data_contract
             }
@@ -78,18 +80,34 @@ def download_video(url: str):
     except Exception as e:
         return {"success": False, "error": str(e)}
 
+@app.get("/api/download-file")
+def download_file(video_url: str, title: str = "video"):
+    """මෙන්න මචං වීඩියෝ එක බ්‍රව්සර් එකේ play නොවී ශනිකව download කරවන තැන"""
+    try:
+        req = requests.get(video_url, stream=True, timeout=30)
+        if req.status_code != 200:
+            raise HTTPException(status_code=400, detail="වීඩියෝව බාගත නොහැක")
+        
+        # attachment දාපු නිසා බ්‍රව්සර් එකෙන් කෙලින්ම ෆයිල් එකක් විදිහට බානවා
+        return StreamingResponse(
+            req.iter_content(chunk_size=1024*1024),
+            media_type="video/mp4",
+            headers={"Content-Disposition": f"attachment; filename=\"{title}.mp4\""}
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/api/download-thumbnail")
 def download_thumbnail(image_url: str):
-    """JPG බටන් එක එබුවම පින්තූරය වෙනම ටැබ් එකක පෙන්වන්නේ නැතුව කෙලින්ම ඩවුන්ලෝඩ් කරවන Endpoint එක"""
     try:
-        req = requests.get(image_url, stream=True)
+        req = requests.get(image_url, stream=True, timeout=15)
         if req.status_code != 200:
             raise HTTPException(status_code=400, detail="පින්තූරය ලබාගත නොහැක")
             
         return StreamingResponse(
             req.iter_content(chunk_size=1024),
             media_type="image/jpeg",
-            headers={"Content-Disposition": "attachment; filename=fb_thumbnail.jpg"}
+            headers={"Content-Disposition": "attachment; filename=\"fb_thumbnail.jpg\""}
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
