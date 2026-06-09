@@ -7,6 +7,7 @@ import urllib.parse
 
 app = FastAPI()
 
+# CORS දාන්න ඕන බ්‍රව්සර් එකෙන් API එකට සම්බන්ධ වෙන්න
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -15,9 +16,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# මේකෙන් තමයි වීඩියෝ එකේ තොරතුරු (Title, Thumbnail, URL) ගන්නේ
 @app.get("/api/download")
 def download_video(url: str):
-    ydl_opts = {'format': 'best', 'quiet': True, 'no_warnings': True}
+    # TikTok/YT බ්ලොක් නොවෙන්න මේ User Agent එක පට්ට වැදගත්
+    ydl_opts = {
+        'format': 'best', 
+        'quiet': True, 
+        'no_warnings': True,
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -30,6 +38,7 @@ def download_video(url: str):
     except Exception as e:
         return {"success": False, "error": str(e)}
 
+# මේකෙන් තමයි වීඩියෝ එක කෙලින්ම සර්වර් එක හරහා Stream කරන්නේ
 @app.get("/api/stream")
 def stream_video(video_url: str, title: str = "video"):
     try:
@@ -38,7 +47,7 @@ def stream_video(video_url: str, title: str = "video"):
         }
         req = requests.get(video_url, headers=headers, stream=True)
         
-        # මෙන්න මේක තමයි මචං වැඩේ: නම UTF-8 වලින් Encode කරලා Header එකට දානවා
+        # අකුරු අවුල් යන්නේ නැති වෙන්න UTF-8 Encode කරනවා
         encoded_title = urllib.parse.quote(title)
         
         return StreamingResponse(
