@@ -1,142 +1,145 @@
 import os
-import requests
-from flask import Flask, request, Response, jsonify
+import re
+from flask import Flask, request, jsonify, send_file, after_this_request
 from flask_cors import CORS
 import yt_dlp
 
 app = Flask(__name__)
-# 🌍 වෙනත් Origins (Frontend) වල ඉඳන් එන Requests බ්ලොක් නොවෙන්න CORS දානවා
-CORS(app)
+CORS(app)  # Frontend එක බ්ලොක් නොවී කනෙක්ට් වෙන්න
 
-def format_size(bytes_size):
-    if not bytes_size:
-        return "Unknown Size"
-    try:
-        mb = bytes_size / (1024 * 1024)
-        return f"{mb:.1f} MB"
-    except:
-        return "Unknown Size"
+# සිංහල අකුරු ප්‍රශ්නාර්ථ ලකුණු වෙන්නේ නැතුව ලස්සනට යවන්න මේක අනිවාර්යයි!
+app.config['JSON_AS_ASCII'] = False
+
+# ඩවුන්ලෝඩ් කරන වීඩියෝ තාවකාලිකව සේව් කරන්න ෆෝල්ඩර් එක
+DOWNLOAD_DIR = "downloads"
+if not os.path.exists(DOWNLOAD_DIR):
+    os.makedirs(DOWNLOAD_DIR)
 
 @app.route('/')
 def home():
-    return jsonify({"status": "Server is running smoothly!", "developer": "Sarada"})
+    return jsonify({"status": "working", "message": "වීඩියෝ ඩවුන්ලෝඩර් සර්වර් එක සුපිරියටම වැඩ මචං!"})
 
-# 🧠 1. VIDEO METADATA & REAL SIZES EXTRACTOR
-@app.route('/api/download', methods=['GET'])
-def download_video():
-    url = request.args.get('url')
-    if not url:
-        return jsonify({"success": False, "error": "URL එකක් දාලා නැහැ මචං!"}), 400
+@app.route('/get_info', methods=['POST'])
+def get_info():
+    data = request.json or {}
+    video_url = data.get('url')
 
-    # yt-dlp settings (වීඩියෝ එක ඩවුන්ලෝඩ් කරන්නේ නැතුව විස්තර විතරක් ගන්නවා)
+    if not video_url:
+        return jsonify({"error": "මචං වීඩියෝ ලින්ක් එකක් ඇතුලත් කරලා නැහැ!"}), 400
+
+    # Facebook බ්ලොක් නොකරන්න ඇත්තම බ්‍රව්සර් එකක Headers දාමු
     ydl_opts = {
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': 'https://www.facebook.com/',
+        },
         'skip_download': True,
-        'quiet': True,
-        'no_warnings': True,
-        'format': 'best',
     }
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+            info = ydl.extract_info(video_url, download=False)
             
-            title = info.get('title', 'Social Media Video')
-            thumbnail = info.get('thumbnail', 'https://placehold.co/600x338/png')
-            formats_data = info.get('formats', [])
-
-            # UI එකට යවන්න ලෑස්ති කරන Format Structure එක
-            res_formats = {
-                "1080p": {"url": "None", "size": "-- MB"},
-                "720p": {"url": "None", "size": "-- MB"},
-                "480p": {"url": "None", "size": "-- MB"}
-            }
-
-            # 🧠 වීඩියෝ එකේ තියෙන Formats ටික පීරලා 1080, 720, 480 වලට ගැලපෙන ඒවා වෙන් කරගන්නවා
-            for f in formats_data:
-                # Video සහ Audio දෙකම එකට තියෙන (acodec සහ vcodec තියෙන) ඒවා විතරක් ගන්නවා
+            title = info.get('title', 'Facebook Video')
+            thumbnail = info.get('thumbnail', '')
+            
+            formats_list = []
+            formats = info.get('formats', [])
+            
+            for f in formats:
+                # සද්දෙයි වීඩියෝ එකයි දෙකම තියෙන ඒව විතරක් පෙන්නමු
                 if f.get('vcodec') != 'none' and f.get('acodec') != 'none':
-                    height = f.get('height')
-                    f_url = f.get('url')
-                    f_size = f.get('filesize') or f.get('filesize_approx')
+                    
+                    # සයිස් එක ගන්න සේෆ් ක්‍රමයක් (filesize නැත්නම් filesize_approx ගනී)
+                    bytes_size = f.get('filesize') or f.get('filesize_approx') or 0
+                    if bytes_size > 0:
+                        mb_size = round(bytes_size / (1024 * 1024), 2)
+                        size_str = f"{mb_size} MB"
+                    else:
+                        size_str = "Unknown Size"
 
-                    if height == 1080:
-                        res_formats["1080p"] = {"url": f_url, "size": format_size(f_size)}
-                    elif height == 720:
-                        res_formats["720p"] = {"url": f_url, "size": format_size(f_size)}
-                    elif height == 480 or (height and 360 <= height <= 480 and res_formats["480p"]["url"] == "None"):
-                        res_formats["480p"] = {"url": f_url, "size": format_size(f_size)}
+                    formats_list.append({
+                        'format_id': f.get('format_id'),
+                        'ext': f.get('ext', 'mp4'),
+                        'resolution': f.get('resolution') or f"{f.get('width')}x{f.get('height')}",
+                        'size': size_str
+                    })
 
-            # 💡 සමහර සයිට් වල (උදා: Facebook) නිශ්චිතව 1080p/720p වෙන් කරලා නැත්නම් තියෙන හොඳම වීඩියෝ එක Default දෙනවා
-            best_url = info.get('url')
-            best_size = info.get('filesize') or info.get('filesize_approx')
-            
-            if res_formats["720p"]["url"] == "None" and best_url:
-                res_formats["720p"] = {"url": best_url, "size": format_size(best_size)}
+            # ලැයිස්තුව හිස්නම් හොඳම එක ඔටෝ සෙට් කරමු
+            if not formats_list:
+                formats_list.append({
+                    'format_id': 'best',
+                    'ext': info.get('ext', 'mp4'),
+                    'resolution': 'Best Quality',
+                    'size': 'Unknown Size'
+                })
 
             return jsonify({
-                "success": True,
-                "title": title,
-                "thumbnail": thumbnail,
-                "formats": res_formats
+                'title': title,
+                'thumbnail': thumbnail,
+                'formats': formats_list
             })
 
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        print(f"Info Error: {str(e)}")
+        return jsonify({"error": f"වීඩියෝ තොරතුරු ලබාගන්න බැරි වුණා මචං! (ලෙඩේ: {str(e)})"}), 500
 
+@app.route('/download', methods=['POST'])
+def download_video():
+    data = request.json or {}
+    video_url = data.get('url')
+    format_id = data.get('format_id', 'best')
 
-# 🧠 2. CRITICAL PROXY STREAMER (බ්‍රව්සර් ප්ලේ එක වළක්වා ශණිකව බාන්න හදපු එක)
-@app.route('/api/stream')
-def stream_video():
-    video_url = request.args.get('video_url')
-    title = request.args.get('title', 'video')
+    if not video_url:
+        return jsonify({"error": "මචං වීඩියෝ ලින්ක් එකක් නැහැ!"}), 400
+
+    outtmpl = os.path.join(DOWNLOAD_DIR, '%(title)s_%(id)s.%(ext)s')
     
-    if not video_url or video_url == "None":
-        return "Error: වලංගු වීඩියෝ ලින්ක් එකක් නැත!", 400
-        
+    ydl_opts = {
+        'format': format_id,
+        'outtmpl': outtmpl,
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': 'https://www.facebook.com/',
+        }
+    }
+
     try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        }
-        # CDN එකෙන් වීඩියෝ එක Stream එකක් විදිහට ඇදලා ගන්නවා
-        req = requests.get(video_url, headers=headers, stream=True, timeout=15)
-        
-        # 🔥 මෙන්න මේ HEADER එකෙන් තමයි බ්‍රව්සර් එකට PLAY නොකර DIRECT DOWNLOAD කරන්න බල කරන්නේ!
-        download_headers = {
-            'Content-Disposition': f'attachment; filename="{title}.mp4"',
-            'Content-Type': 'video/mp4',
-            'Cache-Control': 'no-cache'
-        }
-        
-        def generate():
-            for chunk in req.iter_content(chunk_size=8192):
-                if chunk:
-                    yield chunk
-                    
-        return Response(generate(), headers=download_headers)
-        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(video_url, download=True)
+            file_path = ydl.prepare_filename(info)
+            
+            # Extension මාරු වුණොත් සේෆ් වෙන්න ඇත්තම ෆයිල් එක චෙක් කරමු
+            if not os.path.exists(file_path):
+                base_path, _ = os.path.splitext(file_path)
+                for f in os.listdir(DOWNLOAD_DIR):
+                    if f.startswith(os.path.basename(base_path)):
+                        file_path = os.path.join(DOWNLOAD_DIR, f)
+                        break
+
+            if os.path.exists(file_path):
+                # වීඩියෝ එක යැව්වට පස්සේ සර්වර් එකෙන් ඔටෝ මකන්න (Disk එක පිරෙන්නේ නැති වෙන්න)
+                @after_this_request
+                def remove_file(response):
+                    try:
+                        os.remove(file_path)
+                    except Exception as error:
+                        print(f"File delete error: {error}")
+                    return response
+
+                return send_file(file_path, as_attachment=True)
+            else:
+                return jsonify({"error": "සර්වර් එක ඇතුලේ වීඩියෝ ෆයිල් එක හොයාගන්න බැරි වුණා!"}), 404
+
     except Exception as e:
-        return f"ප්‍රොක්සි කිරීමේ දෝෂයක් මචං: {str(e)}", 500
-
-
-# 🧠 3. THUMBNAIL DOWNLOADER ENDPOINT
-@app.route('/api/download-thumbnail')
-def download_thumbnail():
-    image_url = request.args.get('image_url')
-    if not image_url:
-        return "Error: No Image URL", 400
-        
-    try:
-        req = requests.get(image_url, stream=True, timeout=10)
-        download_headers = {
-            'Content-Disposition': 'attachment; filename="thumbnail.jpg"',
-            'Content-Type': 'image/jpeg'
-        }
-        return Response(req.content, headers=download_headers)
-    except Exception as e:
-        return f"Thumbnail Error: {str(e)}", 500
-
+        print(f"Download Error: {str(e)}")
+        return jsonify({"error": f"ඩවුන්ලෝඩ් එක ෆේල් වුණා මචං! (ලෙඩේ: {str(e)})"}), 500
 
 if __name__ == '__main__':
-    # Render එකෙන් දෙන පෝට් එකට සෙට් වෙන්න දාපු ලොජික් එක
+    # Render එකේ පෝට් එක ඔටෝ අල්ලගන්න දාන කෑල්ල
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
