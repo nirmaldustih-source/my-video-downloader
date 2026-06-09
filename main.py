@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 import yt_dlp
 import requests
+import urllib.parse
 
 app = FastAPI()
 
@@ -16,8 +17,6 @@ app.add_middleware(
 
 @app.get("/api/download")
 def download_video(url: str):
-    if not url:
-        raise HTTPException(status_code=400, detail="URL එකක් දාපන්")
     ydl_opts = {'format': 'best', 'quiet': True, 'no_warnings': True}
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -35,15 +34,19 @@ def download_video(url: str):
 def stream_video(video_url: str, title: str = "video"):
     try:
         headers = {
-    'Content-Disposition': 'attachment; filename="video.mp4"'
-}
-return StreamingResponse(video_stream, media_type="video/mp4", headers=headers)
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        }
         req = requests.get(video_url, headers=headers, stream=True)
-        clean_title = "".join([c for c in title if c.isalpha() or c.isdigit() or c==' ']).rstrip()
+        
+        # මෙන්න මේක තමයි මචං වැඩේ: නම UTF-8 වලින් Encode කරලා Header එකට දානවා
+        encoded_title = urllib.parse.quote(title)
+        
         return StreamingResponse(
             req.iter_content(chunk_size=1024*1024), 
             media_type="video/mp4",
-            headers={"Content-Disposition": f"attachment; filename={clean_title}.mp4"}
+            headers={
+                "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_title}.mp4"
+            }
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
