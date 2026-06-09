@@ -3,6 +3,7 @@ import requests
 from flask import Flask, request, Response, jsonify
 from flask_cors import CORS
 import yt_dlp
+from urllib.parse import quote  # 🚀 සිංහල අකුරු ප්‍රශ්නය විසඳන්න මේක අනිවාර්යයි!
 
 app = Flask(__name__)
 # 🌍 වෙනත් Origins (Frontend) වල ඉඳන් එන Requests බ්ලොක් නොවෙන්න CORS දානවා
@@ -23,7 +24,7 @@ def home():
     return jsonify({"status": "Server is running smoothly!", "developer": "Sarada"})
 
 # 🧠 1. VIDEO METADATA & REAL SIZES EXTRACTOR
-@app.route('/api/download', list_allowed_methods=['GET'])
+@app.route('/api/download', methods=['GET'])
 def download_video():
     url = request.args.get('url')
     if not url:
@@ -85,7 +86,7 @@ def download_video():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
-# 🧠 2. CRITICAL PROXY STREAMER (බ්‍රව්සර් ප්ලේ එක වළක්වා ශණිකව බාන්න හදපු එක)
+# 🧠 2. CRITICAL PROXY STREAMER (සිංහල අකුරු සහ බ්‍රව්සර් ප්ලේ ලෙඩේ සුව කළ එක)
 @app.route('/api/stream')
 def stream_video():
     video_url = request.args.get('video_url')
@@ -101,9 +102,12 @@ def stream_video():
         # CDN එකෙන් වීඩියෝ එක Stream එකක් විදිහට ඇදලා ගන්නවා
         req = requests.get(video_url, headers=headers, stream=True, timeout=15)
         
-        # 🔥 මෙන්න මේ HEADER එකෙන් තමයි බ්‍රව්සර් එකට PLAY නොකර DIRECT DOWNLOAD කරන්න බල කරන්නේ!
+        # 👑 FIX: සිංහල අකුරු / ඉමෝජි නිසා 'latin-1' crash වෙන එක නවත්වන්න UTF-8 URL Encode කරනවා!
+        # filename*=UTF-8'' කියන එකෙන් ඕනෑම භාෂාවක නමක් බ්‍රව්සර් එකට කියවන්න පුළුවන් වෙනවා.
+        encoded_filename = quote(f"{title}.mp4")
+        
         download_headers = {
-            'Content-Disposition': f'attachment; filename="{title}.mp4"',
+            'Content-Disposition': f"attachment; filename*=UTF-8''{encoded_filename}",
             'Content-Type': 'video/mp4',
             'Cache-Control': 'no-cache'
         }
@@ -119,17 +123,23 @@ def stream_video():
         return f"ප්‍රොක්සි කිරීමේ දෝෂයක් මචං: {str(e)}", 500
 
 
-# 🧠 3. THUMBNAIL DOWNLOADER ENDPOINT
+# 🧠 3. THUMBNAIL DOWNLOADER ENDPOINT (සිංහල මාතෘකා FIX එක සහිතයි)
 @app.route('/api/download-thumbnail')
 def download_thumbnail():
     image_url = request.args.get('image_url')
+    title = request.args.get('title', 'thumbnail')
+    
     if not image_url:
         return "Error: No Image URL", 400
         
     try:
         req = requests.get(image_url, stream=True, timeout=10)
+        
+        # මෙතනත් Thumbnail බාද්දී සිංහල තිබ්බොත් ලෙඩ නොදෙන්න Fix එක දැම්මා
+        encoded_filename = quote(f"{title}.jpg")
+        
         download_headers = {
-            'Content-Disposition': 'attachment; filename="thumbnail.jpg"',
+            'Content-Disposition': f"attachment; filename*=UTF-8''{encoded_filename}",
             'Content-Type': 'image/jpeg'
         }
         return Response(req.content, headers=download_headers)
