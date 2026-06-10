@@ -6,10 +6,10 @@ from flask_cors import CORS
 import yt_dlp
 
 app = Flask(__name__)
-CORS(app)  # Frontend එක බ්ලොක් නොවී කනෙක්ට් වෙන්න
+CORS(app)
 
-# සිංහල අකුරු ප්‍රශ්නාර්ථ (???) ලකුණු වෙන්නේ නැතුව ලස්සනට යවන්න මේක අනිවාර්යයි!
-app.config['JSON_AS_ASCII'] = False
+# Flask 3+ වල සිංහල අකුරු ප්‍රශ්නාර්ථ නොවී ලස්සනට යවන්න:
+app.json.ensure_ascii = False
 
 @app.route('/')
 def home():
@@ -23,7 +23,6 @@ def get_video_info():
     if not video_url:
         return jsonify({"success": False, "error": "වීඩියෝ ලින්ක් එකක් ඇතුලත් කරලා නැහැ මචං!"}), 400
 
-    # Facebook/Instagram බ්ලොක් නොවී රැවටෙන්න පාවිච්චි කරන සිරාම Headers
     ydl_opts = {
         'nocheckcertificate': True,
         'geo_bypass': True,
@@ -47,19 +46,16 @@ def get_video_info():
             formats = info.get('formats', [])
             duration = info.get('duration')
 
-            # වීඩියෝ එකේ තියෙන Formats ටික පෙරාගෙන UI එකේ slots (1080p, 720p, 480p) වලට බෙදමු
             for f in formats:
                 url = f.get('url')
                 if not url:
                     continue
                 
-                # ප්‍රමාණය (Size) ගණනය කරමු (filesize නැත්නම් filesize_approx ගනී, ඒකත් නැත්නම් bitrate එකෙන් හදයි)
                 bytes_size = f.get('filesize') or f.get('filesize_approx') or 0
                 if bytes_size > 0:
                     mb_size = round(bytes_size / (1024 * 1024), 2)
                     size_str = f"{mb_size} MB"
                 elif duration and f.get('tbr'):
-                    # Bitrate (tbr) වලින් දළ සයිස් එක හැදීම
                     est_bytes = (f.get('tbr') * 1000 * duration) / 8
                     size_str = f"{round(est_bytes / (1024 * 1024), 2)} MB"
                 else:
@@ -68,7 +64,6 @@ def get_video_info():
                 height = f.get('height') or 0
                 format_id = f.get('format_id', '')
 
-                # UI එකේ තියෙන බටන් තුනට හරියන්න Formats වර්ගීකරණය
                 if height >= 1080 or "1080" in format_id:
                     formats_dict["1080p"] = {"size": size_str, "url": url}
                 elif height >= 720 or "720" in format_id or "hd" in format_id:
@@ -76,7 +71,6 @@ def get_video_info():
                 elif height <= 480 or "480" in format_id or "sd" in format_id:
                     formats_dict["480p"] = {"size": size_str, "url": url}
 
-            # Safety Fallback: FB එකෙන් HD සහ SD විතරක් දුන්නොත් UI එකේ 1080p එක හිස් නොවෙන්න HD එකම දානවා
             if "720p" in formats_dict and "1080p" not in formats_dict:
                 formats_dict["1080p"] = formats_dict["720p"]
             
@@ -84,7 +78,6 @@ def get_video_info():
                 if "720p" not in formats_dict: formats_dict["720p"] = formats_dict["480p"]
                 if "1080p" not in formats_dict: formats_dict["1080p"] = formats_dict["480p"]
 
-            # කිසිම එකක් සෙට් වුණේ නැත්නම් Main URL එක හරි බටන් තුනටම පාස් කරනවා UI එක බ්‍රේක් නොවෙන්න
             fallback_url = info.get('url') or video_url
             for slot in ["1080p", "720p", "480p"]:
                 if slot not in formats_dict:
@@ -102,7 +95,7 @@ def get_video_info():
         return jsonify({"success": False, "error": f"වීඩියෝ තොරතුරු ලබාගන්න බැරි වුණා මචං! ({str(e)})"}), 500
 
 
-# 2. CRITICAL DIRECT DOWNLOAD RESOLVER (වෙන ටැබ් වල ප්ලේ නොවී බුක් ගාලා ඩවුන්ලෝඩ් වෙන කෑල්ල)
+# 2. CRITICAL DIRECT DOWNLOAD RESOLVER (එකම ටැබ් එකේ බලෙන්ම බාන කෑල්ල)
 @app.route('/api/stream', methods=['GET'])
 def stream_video():
     video_url = request.args.get('video_url')
@@ -111,7 +104,6 @@ def stream_video():
     if not video_url or video_url == "None":
         return "වීඩියෝ ලින්ක් එකක් නැත!", 400
 
-    # ෆයිල් නේම් එකේ කුණුහර්ප අකුරු අයින් කරලා ලස්සන නමක් හදමු
     clean_title = re.sub(r'[^\w\-_.]', '_', title)
     filename = f"{clean_title}.mp4"
 
@@ -120,15 +112,13 @@ def stream_video():
     }
 
     try:
-        # FB CDN එකෙන් ඩේටා චන්ක්ස් (Chunks) විදිහට ඇදලා සැනින් බ්‍රව්සර් එකට stream කරමු (Render එකේ ඉඩ යන්නේ නෑ)
         req = requests.get(video_url, headers=headers, stream=True, timeout=30)
         
         def generate():
-            for chunk in req.iter_content(chunk_size=1024 * 1024):  # 1MB Chunks
+            for chunk in req.iter_content(chunk_size=1024 * 1024):
                 if chunk:
                     yield chunk
 
-        # මෙන්න මේ Content-Disposition Header එකෙන් තමයි වෙන ටැබ් එකක ප්ලේ නොවී බලෙන්ම ෆයිල් එකක් විදිහට බාන්නේ!
         return Response(
             generate(),
             headers={
@@ -141,7 +131,7 @@ def stream_video():
         return f"ඩවුන්ලෝඩ් එක මැදදී බිඳ වැටුණා මචං: {str(e)}", 500
 
 
-# 3. THUMBNAIL DOWNLOAD ENDPOINT (UI එකේ JPG බටන් එකට)
+# 3. THUMBNAIL DOWNLOAD ENDPOINT (JPG Photo බටන් එකට)
 @app.route('/api/download-thumbnail', methods=['GET'])
 def download_thumbnail():
     image_url = request.args.get('image_url')
