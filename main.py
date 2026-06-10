@@ -1,15 +1,16 @@
 import os
 import re
 import requests
+import urllib.parse
 from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 import yt_dlp
 
 app = Flask(__name__)
-CORS(app)  # Frontend ?? ?????? ???? ??????? ?????
+CORS(app)  # Frontend එක බ්ලොක් නොවී කනෙක්ට් වෙන්න
 
-# ????? ????? ??????????? (???) ????? ?????? ????? ?????? ????? ??? ??????????!
-app.config['JSON_AS_ASCII'] = False
+# Flask 3+ වල සිංහල අකුරු ප්‍රශ්නාර්ථ ලකුණු (???) නොවී හරියට යවන්න:
+app.json.ensure_ascii = False
 
 @app.route('/')
 def home():
@@ -21,9 +22,9 @@ def get_video_info():
     video_url = request.args.get('url')
     
     if not video_url:
-        return jsonify({"success": False, "error": "?????? ?????? ???? ?????? ???? ???? ???!"}), 400
+        return jsonify({"success": False, "error": "වීඩියෝ ලින්ක් එකක් ඇතුලත් කරලා නැහැ බොක්කා!"}), 400
 
-    # Facebook/Instagram ?????? ???? ???????? ???????? ??? ????? Headers
+    # Facebook/Instagram බ්ලොක් නොවී වැඩකරන්න headers
     ydl_opts = {
         'nocheckcertificate': True,
         'geo_bypass': True,
@@ -47,19 +48,18 @@ def get_video_info():
             formats = info.get('formats', [])
             duration = info.get('duration')
 
-            # ?????? ??? ????? Formats ??? ??????? UI ??? slots (1080p, 720p, 480p) ??? ?????
+            # 480p, 720p, 1080p වෙන වෙනම සයිස් ටික නිවැරදිව ෆ්ලෝ වෙන්න හදපු ලොජික් එක
             for f in formats:
                 url = f.get('url')
                 if not url:
                     continue
                 
-                # ???????? (Size) ???? ???? (filesize ??????? filesize_approx ???, ???? ??????? bitrate ????? ????)
+                # බයිට්ස් ගාණ ලස්සනට MB වලට හරවනවා
                 bytes_size = f.get('filesize') or f.get('filesize_approx') or 0
                 if bytes_size > 0:
                     mb_size = round(bytes_size / (1024 * 1024), 2)
                     size_str = f"{mb_size} MB"
                 elif duration and f.get('tbr'):
-                    # Bitrate (tbr) ????? ?? ????? ?? ?????
                     est_bytes = (f.get('tbr') * 1000 * duration) / 8
                     size_str = f"{round(est_bytes / (1024 * 1024), 2)} MB"
                 else:
@@ -68,24 +68,26 @@ def get_video_info():
                 height = f.get('height') or 0
                 format_id = f.get('format_id', '')
 
-                # UI ??? ????? ???? ???? ??????? Formats ?????????
-                if height >= 1080 or "1080" in format_id:
-                    formats_dict["1080p"] = {"size": size_str, "url": url}
-                elif height >= 720 or "720" in format_id or "hd" in format_id:
-                    formats_dict["720p"] = {"size": size_str, "url": url}
-                elif height <= 480 or "480" in format_id or "sd" in format_id:
-                    formats_dict["480p"] = {"size": size_str, "url": url}
+                # එකම කොලිටි එකේ ෆෝමැට් කිහිපයක් තිබ්බොත්, සයිස් එක තියෙන එකට මුල් තැන දෙනවා
+                if height == 1080 or "1080" in format_id:
+                    if "1080p" not in formats_dict or size_str != "HQ Size":
+                        formats_dict["1080p"] = {"size": size_str, "url": url}
+                elif height == 720 or "720" in format_id or "hd" in format_id:
+                    if "720p" not in formats_dict or size_str != "HQ Size":
+                        formats_dict["720p"] = {"size": size_str, "url": url}
+                elif height == 480 or "480" in format_id or "sd" in format_id:
+                    if "480p" not in formats_dict or size_str != "HQ Size":
+                        formats_dict["480p"] = {"size": size_str, "url": url}
 
-            # Safety Fallback: FB ????? HD ?? SD ?????? ???????? UI ??? 1080p ?? ???? ??????? HD ??? ?????
-            if "720p" in formats_dict and "1080p" not in formats_dict:
-                formats_dict["1080p"] = formats_dict["720p"]
-            
-            if "480p" in formats_dict:
-                if "720p" not in formats_dict: formats_dict["720p"] = formats_dict["480p"]
-                if "1080p" not in formats_dict: formats_dict["1080p"] = formats_dict["480p"]
-
-            # ????? ???? ???? ???? ??????? Main URL ?? ??? ???? ????? ???? ????? UI ?? ??????? ???????
+            # යම් හෙයකින් සයිස් එකක් මිස් වුණොත් විතරක් පාවිච්චි වෙන Fallback එකක්
             fallback_url = info.get('url') or video_url
+            
+            # 720p තියෙනවා නම් ඒක 1080p එකට fallback එකක් විදිහට දෙනවා (හැබැයි 720p සයිස් එක වෙනස් වෙන්නේ නෑ)
+            if "720p" in formats_dict and "1080p" not in formats_dict:
+                formats_dict["1080p"] = {"size": formats_dict["720p"]["size"], "url": formats_dict["720p"]["url"]}
+            if "480p" in formats_dict and "720p" not in formats_dict:
+                formats_dict["720p"] = {"size": formats_dict["480p"]["size"], "url": formats_dict["480p"]["url"]}
+
             for slot in ["1080p", "720p", "480p"]:
                 if slot not in formats_dict:
                     formats_dict[slot] = {"size": "HQ Download", "url": fallback_url}
@@ -99,49 +101,48 @@ def get_video_info():
 
     except Exception as e:
         print(f"Error extracting info: {str(e)}")
-        return jsonify({"success": False, "error": f"?????? ??????? ??????? ???? ???? ???! ({str(e)})"}), 500
+        return jsonify({"success": False, "error": f"තොරතුරු ලබාගැනීම අසාර්ථකයි! ({str(e)})"}), 500
 
 
-# 2. CRITICAL DIRECT DOWNLOAD RESOLVER (??? ???? ?? ???? ???? ???? ???? ????????? ??? ?????)
+# 2. CRITICAL DIRECT DOWNLOAD RESOLVER (Unicode Error එක සදහටම පලවා හැරීම)
 @app.route('/api/stream', methods=['GET'])
 def stream_video():
     video_url = request.args.get('video_url')
     title = request.args.get('title', 'video')
 
     if not video_url or video_url == "None":
-        return "?????? ?????? ???? ???!", 400
+        return "වීඩියෝ ලින්ක් එකක් නැත!", 400
 
-    # ????? ???? ??? ???????? ????? ????? ???? ????? ???? ????
+    # සිංහල අකුරු හෙඩර් එක ඇතුලට සුරක්ෂිතව දාන්න Latin-1 Crash එක වළක්වන Encoding එක
     clean_title = re.sub(r'[^\w\-_.]', '_', title)
-    filename = f"{clean_title}.mp4"
+    encoded_filename = urllib.parse.quote(f"{clean_title}.mp4")
 
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'
     }
 
     try:
-        # FB CDN ????? ???? ??????? (Chunks) ?????? ???? ?????? ????????? ??? stream ???? (Render ??? ?? ????? ??)
         req = requests.get(video_url, headers=headers, stream=True, timeout=30)
         
         def generate():
-            for chunk in req.iter_content(chunk_size=1024 * 1024):  # 1MB Chunks
+            for chunk in req.iter_content(chunk_size=1024 * 1024):  # 1MB Chunks වලින් බ්‍රව්සර් එකට Stream කරනවා
                 if chunk:
                     yield chunk
 
-        # ????? ?? Content-Disposition Header ????? ???? ??? ???? ??? ???? ???? ?????? ????? ???? ?????? ??????!
+        # filename* එක භාවිතයෙන් UTF-8 අකුරු සුරක්ෂිතව බ්‍රව්සර් එකට පාස් කරනවා (සර්වර් එක Crash වෙන්නේ නෑ)
         return Response(
             generate(),
             headers={
-                "Content-Disposition": f"attachment; filename*=UTF-8''{filename}",
+                "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
                 "Content-Type": "video/mp4"
             }
         )
     except Exception as e:
         print(f"Streaming error: {str(e)}")
-        return f"????????? ?? ????? ??? ?????? ???: {str(e)}", 500
+        return f"බාගත වීමේදී දෝෂයක් ඇතිවිය: {str(e)}", 500
 
 
-# 3. THUMBNAIL DOWNLOAD ENDPOINT (UI ??? JPG ???? ???)
+# 3. THUMBNAIL DOWNLOAD ENDPOINT
 @app.route('/api/download-thumbnail', methods=['GET'])
 def download_thumbnail():
     image_url = request.args.get('image_url')
@@ -158,7 +159,7 @@ def download_thumbnail():
             }
         )
     except Exception as e:
-        return f"???????? ????? ???? ????: {str(e)}", 500
+        return f"තම්බ්නේල් බාගත කිරීම අසාර්ථකයි: {str(e)}", 500
 
 
 if __name__ == '__main__':
